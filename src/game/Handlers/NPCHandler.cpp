@@ -425,7 +425,7 @@ void WorldSession::HandleGossipSelectOptionOpcode(WorldPackets::Npc::GossipSelec
         }
 
         if (Eluna* e = GetPlayer()->GetEluna())
-            e->HandleGossipSelectOption(GetPlayer(), item, GetPlayer()->PlayerTalkClass->GossipOptionSender(packet.gossipListId), GetPlayer()->PlayerTalkClass->GossipOptionAction(packet.gossipListId), code);
+            e->HandleGossipSelectOption(GetPlayer(), item, GetPlayer()->PlayerTalkClass->GossipOptionSender(packet.gossipListId), GetPlayer()->PlayerTalkClass->GossipOptionAction(packet.gossipListId), code ? std::string(code) : std::string());
     }
     else if (packet.guid.IsPlayer())
     {
@@ -436,7 +436,7 @@ void WorldSession::HandleGossipSelectOptionOpcode(WorldPackets::Npc::GossipSelec
         }
 
         if (Eluna* e = GetPlayer()->GetEluna())
-            e->HandleGossipSelectOption(GetPlayer(), GetPlayer()->PlayerTalkClass->GetGossipMenu().GetMenuId(), GetPlayer()->PlayerTalkClass->GossipOptionSender(packet.gossipListId), GetPlayer()->PlayerTalkClass->GossipOptionAction(packet.gossipListId), code);
+            e->HandleGossipSelectOption(GetPlayer(), GetPlayer()->PlayerTalkClass->GetGossipMenu().GetMenuId(), GetPlayer()->PlayerTalkClass->GossipOptionSender(packet.gossipListId), GetPlayer()->PlayerTalkClass->GossipOptionAction(packet.gossipListId), code ? std::string(code) : std::string());
     }
 #endif
 

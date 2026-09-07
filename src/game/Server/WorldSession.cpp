@@ -340,6 +340,12 @@ void WorldSession::QueuePacket(std::unique_ptr<ClientPacket const> packet)
 // Add an incoming packet to the queue
 void WorldSession::QueueBinaryPacket(std::unique_ptr<WorldPacket> const& binaryPacket)
 {
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = sWorld.GetEluna())
+        if (!e->OnPacketReceive(this, *binaryPacket))
+            return;
+#endif /* ENABLE_ELUNA */
+
     if (m_sniffFile)
         m_sniffFile->WritePacket(*binaryPacket, true, time(nullptr));
 
@@ -1168,11 +1174,6 @@ uint32 WorldSession::GetTutorialInt(uint32 intId) const
 
 void WorldSession::ExecuteOpcode(OpcodeHandlerPacketImplDetails const& opHandlerImpl, ClientPacket const& packet)
 {
-//#ifdef ENABLE_ELUNA
-//    if (Eluna* e = sWorld.GetEluna())
-//        if (!e->OnPacketReceive(this, *packet))
-//            return;
-//#endif /* ENABLE_ELUNA */
     // need prevent do internal far teleports in handlers because some handlers do lot steps
     // or call code that can do far teleports in some conditions unexpectedly for generic way work code
     if (_player)
