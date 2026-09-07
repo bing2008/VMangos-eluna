@@ -67,6 +67,16 @@ public:
     bool EnterCombatDruidForm();
     bool ShouldEnterStealth() const;
     bool EnterStealthIfNeeded(SpellEntry const* pStealthSpell);
+    bool UpdateConjureSupply();
+    void ResetConjureSupplyState();
+    bool TryStartConjureSpell(SpellEntry const* pSpellEntry);
+    bool SelectConjureSupplyTarget();
+    void PrepareConjuredStack(uint32 itemId, uint32 count);
+    void InitiateSupplyTrade(Player* pTarget);
+    void PlaceSupplyItemsInTrade();
+    void CancelSupplyTrade();
+    void RefuseSupplyTarget();
+    Item* FindInventoryItemByEntry(uint32 itemId) const;
 
     bool CheckForDispelTargets();
     void UpdateInCombatAI() final;
@@ -105,6 +115,18 @@ public:
     float m_z = 0.0f;
     float m_o = 0.0f;
     bool m_resetSpellData = false;
+    SpellEntry const* m_pendingConjureSpell = nullptr;
+    ShortTimeTracker m_conjureTimer;
+    ObjectGuid m_supplyTargetGuid;
+    uint32 m_supplyState = 0;
+    uint32 m_supplyWaterItemId = 0;
+    uint32 m_supplyFoodItemId = 0;
+    uint32 m_supplyWaterAmount = 0;
+    uint32 m_supplyFoodAmount = 0;
+    bool m_supplyWaterPrepared = false;
+    bool m_supplyFoodPrepared = false;
+    std::vector<uint32> m_refusedSupplyGuids;
+    ShortTimeTracker m_supplyRetryTimer;
 };
 
 #endif

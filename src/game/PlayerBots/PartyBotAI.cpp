@@ -26,6 +26,7 @@
 #include "Spell.h"
 #include "SpellAuras.h"
 #include "Chat.h"
+#include "TradeData.h"
 #include "Utilities/Random.h"
 
 #include <random>
@@ -44,6 +45,31 @@ enum PartyBotSpells
 #define PB_MAX_FOLLOW_DIST 6.0f
 #define PB_MIN_FOLLOW_ANGLE 0.0f
 #define PB_MAX_FOLLOW_ANGLE 6.0f
+
+#define PB_SUPPLY_GIVE_COUNT 10
+
+static uint32 GetConjureItemEntry(SpellEntry const* pSpellEntry)
+{
+    if (!pSpellEntry)
+        return 0;
+
+    for (uint32 i = 0; i < MAX_EFFECT_INDEX; ++i)
+    {
+        if (pSpellEntry->Effect[i] == SPELL_EFFECT_CREATE_ITEM)
+            return uint32(pSpellEntry->EffectItemType[i]);
+    }
+
+    return 0;
+}
+
+enum PartyBotSupplyState
+{
+    PB_SUPPLY_NONE = 0,
+    PB_SUPPLY_CASTING,          // conjure spell is being cast
+    PB_SUPPLY_PREPARING,        // items are ready to be topped up / next conjure
+    PB_SUPPLY_WAITING_OPEN,     // trade request sent, waiting for the target to open it
+    PB_SUPPLY_WAITING_ACCEPT    // trade window is open, waiting for the target to accept
+};
 
 bool PartyBotAI::OnSessionLoaded(PlayerBotEntry* entry, WorldSession* sess)
 {
@@ -232,6 +258,343 @@ bool PartyBotAI::DrinkAndEat()
     }
 
     return needToEat || needToDrink;
+}
+
+bool PartyBotAI::UpdateConjureSupply()
+{
+    switch (m_supplyState)
+    {
+        case PB_SUPPLY_CASTING:
+        {
+            if (!m_conjureTimer.Passed())
+                return true;
+
+            if (m_pendingConjureSpell)
+            {
+                uint32 const itemId = GetConjureItemEntry(m_pendingConjureSpell);
+                if (m_supplyWaterItemId && itemId == m_supplyWaterItemId)
+                {
+                    PrepareConjuredStack(m_supplyWaterItemId, m_supplyWaterAmount);
+                    m_supplyWaterPrepared = true;
+                }
+                else if (m_supplyFoodItemId && itemId == m_supplyFoodItemId)
+                {
+                    PrepareConjuredStack(m_supplyFoodItemId, m_supplyFoodAmount);
+                    m_supplyFoodPrepared = true;
+                }
+
+                m_pendingConjureSpell = nullptr;
+            }
+
+            m_supplyState = PB_SUPPLY_PREPARING;
+            return true;
+        }
+        case PB_SUPPLY_PREPARING:
+        {
+            if (me->IsMoving())
+                return true;
+
+            SpellEntry const* pNextSpell = nullptr;
+            if (m_supplyWaterAmount && !m_supplyWaterPrepared && m_spells.mage.pConjureWater)
+                pNextSpell = m_spells.mage.pConjureWater;
+            else if (m_supplyFoodAmount && !m_supplyFoodPrepared && m_spells.mage.pConjureFood)
+                pNextSpell = m_spells.mage.pConjureFood;
+
+            if (pNextSpell)
+                TryStartConjureSpell(pNextSpell);
+            else if (!m_supplyTargetGuid.IsEmpty())
+            {
+                if (Player* pTarget = ObjectAccessor::FindPlayer(m_supplyTargetGuid))
+                    InitiateSupplyTrade(pTarget);
+                else
+                    ResetConjureSupplyState();
+            }
+
+            return true;
+        }
+        case PB_SUPPLY_WAITING_OPEN:
+        case PB_SUPPLY_WAITING_ACCEPT:
+        {
+            if (m_conjureTimer.Passed())
+                CancelSupplyTrade();
+
+            return true;
+        }
+        default:
+            break;
+    }
+
+    if (me->IsInCombat() || me->IsMounted() || me->IsMoving() || IsInDuel())
+        return false;
+
+    return SelectConjureSupplyTarget();
+}
+
+void PartyBotAI::ResetConjureSupplyState()
+{
+    m_supplyState = PB_SUPPLY_NONE;
+    m_supplyTargetGuid.Clear();
+    m_supplyWaterItemId = 0;
+    m_supplyFoodItemId = 0;
+    m_supplyWaterAmount = 0;
+    m_supplyFoodAmount = 0;
+    m_supplyWaterPrepared = false;
+    m_supplyFoodPrepared = false;
+    m_pendingConjureSpell = nullptr;
+    m_supplyRetryTimer.Reset(0);
+}
+
+bool PartyBotAI::TryStartConjureSpell(SpellEntry const* pSpellEntry)
+{
+    if (!pSpellEntry || !CanTryToCastSpell(me, pSpellEntry))
+        return false;
+
+    if (DoCastSpell(me, pSpellEntry) != SPELL_CAST_OK)
+        return false;
+
+    m_pendingConjureSpell = pSpellEntry;
+    m_conjureTimer.Reset(pSpellEntry->GetCastTime(me) + 1000);
+    m_supplyState = PB_SUPPLY_CASTING;
+    return true;
+}
+
+void PartyBotAI::PrepareConjuredStack(uint32 itemId, uint32 count)
+{
+    if (!itemId || !count)
+        return;
+
+    // Rebuild the stack so it contains exactly the amount we are going to trade.
+    // Destroying the few items created by the real conjure spell first also
+    // guarantees the trade window only contains one clean stack per item type.
+    me->DestroyItemCount(itemId, me->GetItemCount(itemId), true);
+
+    ItemPosCountVec dest;
+    uint32 noSpace = 0;
+    if (me->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, count, &noSpace) == EQUIP_ERR_OK)
+        me->StoreNewItem(dest, itemId, true, Item::GenerateItemRandomPropertyId(itemId));
+}
+
+bool PartyBotAI::SelectConjureSupplyTarget()
+{
+    if (!m_supplyRetryTimer.Passed())
+        return false;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    Player* pLeader = GetPartyLeader();
+    std::vector<Player*> humanCandidates;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me)
+            continue;
+
+        // Only supply real (human) players, never other bots.
+        if (!pMember->GetSession() || pMember->GetSession()->GetBot())
+            continue;
+
+        if (!pMember->IsAlive() || pMember->IsInCombat())
+            continue;
+
+        if (me->GetMap() != pMember->GetMap() || !me->IsWithinDistInMap(pMember, 11.0f))
+            continue;
+
+        bool refused = false;
+        uint32 const targetGuidLow = pMember->GetGUIDLow();
+        for (auto refusedGuid : m_refusedSupplyGuids)
+        {
+            if (refusedGuid == targetGuidLow)
+            {
+                refused = true;
+                break;
+            }
+        }
+
+        if (!refused)
+            humanCandidates.push_back(pMember);
+    }
+
+    if (humanCandidates.empty())
+        return false;
+
+    auto trySelectTarget = [this](Player* pTarget) -> bool
+    {
+        uint32 foodItemId = 0;
+        uint32 foodAmount = 0;
+        uint32 waterItemId = 0;
+        uint32 waterAmount = 0;
+
+        if (m_spells.mage.pConjureFood)
+        {
+            foodItemId = GetConjureItemEntry(m_spells.mage.pConjureFood);
+            if (sObjectMgr.GetItemPrototype(foodItemId))
+            {
+                if (pTarget->GetItemCount(foodItemId) >= PB_SUPPLY_GIVE_COUNT)
+                    foodItemId = 0;
+                else
+                    foodAmount = PB_SUPPLY_GIVE_COUNT;
+            }
+            else
+                foodItemId = 0;
+        }
+
+        if (pTarget->GetPowerType() == POWER_MANA && m_spells.mage.pConjureWater)
+        {
+            waterItemId = GetConjureItemEntry(m_spells.mage.pConjureWater);
+            if (sObjectMgr.GetItemPrototype(waterItemId))
+            {
+                if (pTarget->GetItemCount(waterItemId) >= PB_SUPPLY_GIVE_COUNT)
+                    waterItemId = 0;
+                else
+                    waterAmount = PB_SUPPLY_GIVE_COUNT;
+            }
+            else
+                waterItemId = 0;
+        }
+
+        if (!foodAmount && !waterAmount)
+            return false;
+
+        m_supplyTargetGuid = pTarget->GetObjectGuid();
+        m_supplyFoodItemId = foodItemId;
+        m_supplyFoodAmount = foodAmount;
+        m_supplyWaterItemId = waterItemId;
+        m_supplyWaterAmount = waterAmount;
+        m_supplyFoodPrepared = false;
+        m_supplyWaterPrepared = false;
+        m_supplyState = PB_SUPPLY_PREPARING;
+        return true;
+    };
+
+    if (pLeader)
+        for (Player* pCandidate : humanCandidates)
+            if (pCandidate == pLeader && trySelectTarget(pCandidate))
+                return true;
+
+    for (Player* pCandidate : humanCandidates)
+        if (trySelectTarget(pCandidate))
+            return true;
+
+    return false;
+}
+
+void PartyBotAI::InitiateSupplyTrade(Player* pTarget)
+{
+    if (me->GetTradeData() || pTarget->GetTradeData())
+    {
+        ResetConjureSupplyState();
+        return;
+    }
+
+    // Do not open a trade request while the target is busy fighting or out of
+    // range; keep the prepared stacks and retry once they are available again.
+    if (pTarget->IsInCombat() ||
+        me->GetMap() != pTarget->GetMap() ||
+        !me->IsWithinDistInMap(pTarget, 11.0f))
+        return;
+
+    auto data = std::make_unique<WorldPackets::Trade::InitiateTrade>();
+    data->tradeTargetGuid = pTarget->GetObjectGuid();
+    me->GetSession()->QueuePacket(std::move(data));
+
+    m_supplyState = PB_SUPPLY_WAITING_OPEN;
+    m_conjureTimer.Reset(15000);
+}
+
+void PartyBotAI::PlaceSupplyItemsInTrade()
+{
+    TradeData* myTrade = me->GetTradeData();
+    if (!myTrade || !myTrade->GetTrader() ||
+        myTrade->GetTrader()->GetObjectGuid() != m_supplyTargetGuid)
+    {
+        ResetConjureSupplyState();
+        return;
+    }
+
+    uint8 tradeSlot = 0;
+    if (m_supplyWaterItemId && m_supplyWaterAmount)
+    {
+        if (Item* pItem = FindInventoryItemByEntry(m_supplyWaterItemId))
+            myTrade->SetItem(TradeSlots(tradeSlot++), pItem);
+    }
+
+    if (m_supplyFoodItemId && m_supplyFoodAmount)
+    {
+        if (Item* pItem = FindInventoryItemByEntry(m_supplyFoodItemId))
+            myTrade->SetItem(TradeSlots(tradeSlot++), pItem);
+    }
+
+    if (!tradeSlot)
+    {
+        ResetConjureSupplyState();
+        if (me->GetTradeData())
+            me->TradeCancel(true);
+        return;
+    }
+
+    m_supplyState = PB_SUPPLY_WAITING_ACCEPT;
+    m_conjureTimer.Reset(30000);
+}
+
+void PartyBotAI::CancelSupplyTrade()
+{
+    RefuseSupplyTarget();
+
+    if (me->GetTradeData())
+        me->TradeCancel(true);
+
+    ResetConjureSupplyState();
+}
+
+void PartyBotAI::RefuseSupplyTarget()
+{
+    if (m_supplyTargetGuid.IsEmpty())
+        return;
+
+    uint32 const targetGuidLow = m_supplyTargetGuid.GetCounter();
+    for (auto refusedGuid : m_refusedSupplyGuids)
+    {
+        if (refusedGuid == targetGuidLow)
+            return;
+    }
+
+    m_refusedSupplyGuids.push_back(targetGuidLow);
+}
+
+Item* PartyBotAI::FindInventoryItemByEntry(uint32 itemId) const
+{
+    if (!itemId)
+        return nullptr;
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+    {
+        if (Item* pItem = me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+        {
+            if (pItem->GetEntry() == itemId && !pItem->IsInTrade())
+                return pItem;
+        }
+    }
+
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        Item* pBag = me->GetItemByPos(INVENTORY_SLOT_BAG_0, bag);
+        if (!pBag || pBag->GetProto()->Class != ITEM_CLASS_CONTAINER)
+            continue;
+
+        for (uint8 slot = 0; slot < pBag->GetProto()->ContainerSlots; ++slot)
+        {
+            if (Item* pItem = me->GetItemByPos(bag, slot))
+            {
+                if (pItem->GetEntry() == itemId && !pItem->IsInTrade())
+                    return pItem;
+            }
+        }
+    }
+
+    return nullptr;
 }
 
 bool PartyBotAI::ShouldAutoRevive() const
@@ -561,6 +924,70 @@ void PartyBotAI::OnPacketReceived(WorldPacket const* packet)
             me->GetSession()->QueuePacket(std::move(data));
             return;
         }
+        case SMSG_TRADE_STATUS:
+        {
+            if (!me)
+                return;
+
+            uint32 const status = *((uint32*)(*packet).contents());
+            if (m_supplyState == PB_SUPPLY_WAITING_OPEN ||
+                m_supplyState == PB_SUPPLY_WAITING_ACCEPT)
+            {
+                switch (status)
+                {
+                    case TRADE_STATUS_BEGIN_TRADE:
+                    {
+                        // Another player is requesting a manual trade with the
+                        // bot while our offer is pending: abort the supply offer
+                        // and let the base AI accept the manual trade instead.
+                        ResetConjureSupplyState();
+                        break;
+                    }
+                    case TRADE_STATUS_OPEN_WINDOW:
+                    {
+                        if (m_supplyState == PB_SUPPLY_WAITING_OPEN)
+                            PlaceSupplyItemsInTrade();
+                        return;
+                    }
+                    case TRADE_STATUS_BACK_TO_TRADE:
+                    {
+                        // Trade content changed while we are placing items, or
+                        // the target un-accepted. Keep waiting for the target.
+                        return;
+                    }
+                    case TRADE_STATUS_TRADE_ACCEPT:
+                    {
+                        // Let the base AI accept / finish the trade for us.
+                        break;
+                    }
+                    case TRADE_STATUS_TRADE_COMPLETE:
+                    {
+                        ResetConjureSupplyState();
+                        break;
+                    }
+                    case TRADE_STATUS_TRADE_CANCELED:
+                    case TRADE_STATUS_TRADE_REJECTED:
+                    case TRADE_STATUS_BUSY:
+                    case TRADE_STATUS_CLOSE_WINDOW:
+                    case TRADE_STATUS_IGNORE_YOU:
+                    case TRADE_STATUS_UNKNOWN_13:
+                    {
+                        RefuseSupplyTarget();
+                        ResetConjureSupplyState();
+                        return;
+                    }
+                    default:
+                    {
+                        // Target busy, too far or disappeared: try again later.
+                        ResetConjureSupplyState();
+                        m_supplyRetryTimer.Reset(10000);
+                        return;
+                    }
+                }
+            }
+
+            break;
+        }
         case SMSG_PARTYKILLLOG:
         {
             if (!me)
@@ -604,6 +1031,8 @@ void PartyBotAI::OnPlayerLogin()
 void PartyBotAI::UpdateAI(uint32 const diff)
 {
     m_updateTimer.Update(diff);
+    m_conjureTimer.Update(diff);
+    m_supplyRetryTimer.Update(diff);
     if (m_updateTimer.Passed())
         m_updateTimer.Reset(PB_UPDATE_INTERVAL);
     else
@@ -1725,6 +2154,8 @@ void PartyBotAI::UpdateOutOfCombatAI_Mage()
             return;
         }
     }
+
+    UpdateConjureSupply();
 
     if (m_isBuffing &&
        (!m_spells.mage.pArcaneIntellect ||

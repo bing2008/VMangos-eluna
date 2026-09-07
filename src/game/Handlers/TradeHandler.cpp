@@ -561,8 +561,8 @@ void WorldSession::HandleBeginTradeOpcode(NullClientPacket const& /*packet*/)
     if (!my_trade)
         return;
 
-    my_trade->GetTrader()->GetSession()->SendTradeStatus(TRADE_STATUS_OPEN_WINDOW);
     SendTradeStatus(TRADE_STATUS_OPEN_WINDOW);
+    my_trade->GetTrader()->GetSession()->SendTradeStatus(TRADE_STATUS_OPEN_WINDOW);
 }
 
 void WorldSession::SendCancelTrade(TradeStatus status)
