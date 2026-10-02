@@ -1029,6 +1029,9 @@ bool GossipSelect_ProfessionNPC(Player* player, Creature* creature, uint32 sende
 */
 
 #define SPELL_LIGHTNING_VISUAL 24240
+// Template entries are small (< 100000), so this offset marks the explicit
+// confirmation menu selection in the premade gear/spec NPC gossip.
+static uint32 const PREMADE_TEMPLATE_CONFIRM_OFFSET = 100000;
 
 bool GossipHello_PremadeGearNPC(Player* player, Creature* creature)
 {
@@ -1046,9 +1049,41 @@ bool GossipHello_PremadeGearNPC(Player* player, Creature* creature)
 
 bool GossipSelect_PremadeGearNPC(Player* player, Creature* creature, uint32 sender, uint32 action)
 {
-    player->SendSpellGo(player, SPELL_LIGHTNING_VISUAL);
-    sObjectMgr.ApplyPremadeGearTemplateToPlayer(action, player);
-    player->CLOSE_GOSSIP_MENU();
+    if (action == 0)                                                // cancelled
+    {
+        player->CLOSE_GOSSIP_MENU();
+        return true;
+    }
+
+    if (action >= PREMADE_TEMPLATE_CONFIRM_OFFSET)                  // confirmed
+    {
+        uint32 const entry = action - PREMADE_TEMPLATE_CONFIRM_OFFSET;
+        if (sObjectMgr.GetPlayerPremadeGearTemplates().find(entry) == sObjectMgr.GetPlayerPremadeGearTemplates().end())
+        {
+            player->CLOSE_GOSSIP_MENU();
+            return true;
+        }
+
+        player->SendSpellGo(player, SPELL_LIGHTNING_VISUAL);
+        sObjectMgr.ApplyPremadeGearTemplateToPlayer(entry, player);
+        player->CLOSE_GOSSIP_MENU();
+        return true;
+    }
+
+    // First click: ask for confirmation before applying anything.
+    auto const& templates = sObjectMgr.GetPlayerPremadeGearTemplates();
+    auto const itr = templates.find(action);
+    if (itr == templates.end())
+    {
+        player->CLOSE_GOSSIP_MENU();
+        return true;
+    }
+
+    std::string const confirmText = "CONFIRM: Apply '" + itr->second.name +
+        "' (will replace equipment and auto-level target to " + std::to_string(itr->second.level) + " if lower)";
+    player->ADD_GOSSIP_ITEM(GOSSIP_ICON_INTERACT_2, confirmText.c_str(), GOSSIP_SENDER_MAIN, action + PREMADE_TEMPLATE_CONFIRM_OFFSET);
+    player->ADD_GOSSIP_ITEM(GOSSIP_ICON_CHAT, "Cancel", GOSSIP_SENDER_MAIN, 0);
+    player->SEND_GOSSIP_MENU(DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
     return true;
 }
 
@@ -1068,9 +1103,41 @@ bool GossipHello_PremadeSpecNPC(Player* player, Creature* creature)
 
 bool GossipSelect_PremadeSpecNPC(Player* player, Creature* creature, uint32 sender, uint32 action)
 {
-    player->SendSpellGo(player, SPELL_LIGHTNING_VISUAL);
-    sObjectMgr.ApplyPremadeSpecTemplateToPlayer(action, player);
-    player->CLOSE_GOSSIP_MENU();
+    if (action == 0)                                                // cancelled
+    {
+        player->CLOSE_GOSSIP_MENU();
+        return true;
+    }
+
+    if (action >= PREMADE_TEMPLATE_CONFIRM_OFFSET)                  // confirmed
+    {
+        uint32 const entry = action - PREMADE_TEMPLATE_CONFIRM_OFFSET;
+        if (sObjectMgr.GetPlayerPremadeSpecTemplates().find(entry) == sObjectMgr.GetPlayerPremadeSpecTemplates().end())
+        {
+            player->CLOSE_GOSSIP_MENU();
+            return true;
+        }
+
+        player->SendSpellGo(player, SPELL_LIGHTNING_VISUAL);
+        sObjectMgr.ApplyPremadeSpecTemplateToPlayer(entry, player);
+        player->CLOSE_GOSSIP_MENU();
+        return true;
+    }
+
+    // First click: ask for confirmation before applying anything.
+    auto const& templates = sObjectMgr.GetPlayerPremadeSpecTemplates();
+    auto const itr = templates.find(action);
+    if (itr == templates.end())
+    {
+        player->CLOSE_GOSSIP_MENU();
+        return true;
+    }
+
+    std::string const confirmText = "CONFIRM: Apply '" + itr->second.name +
+        "' (will reset talents/spells and auto-level target to " + std::to_string(itr->second.level) + " if lower)";
+    player->ADD_GOSSIP_ITEM(GOSSIP_ICON_INTERACT_2, confirmText.c_str(), GOSSIP_SENDER_MAIN, action + PREMADE_TEMPLATE_CONFIRM_OFFSET);
+    player->ADD_GOSSIP_ITEM(GOSSIP_ICON_CHAT, "Cancel", GOSSIP_SENDER_MAIN, 0);
+    player->SEND_GOSSIP_MENU(DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
     return true;
 }
 

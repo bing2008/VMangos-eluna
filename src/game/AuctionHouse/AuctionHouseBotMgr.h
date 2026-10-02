@@ -15,12 +15,15 @@ struct AuctionHouseBotEntry
     uint32 stack;
     uint32 bid;
     uint32 buyout;
+    uint32 count;                                           // target number of listings to keep in the auction house
 };
 
 struct AuctionHouseBotConfig
 {
-    uint32 itemcount;
+    uint32 itemcount;                                       // optional global cap on total bot listings, 0 = unlimited
     uint32 ahfid;
+    uint32 defaultItemCount;                                // target used for rows whose `count` column is 0
+    uint32 maxAddsPerTick;                                  // burst protection, 0 = unlimited
 
     bool enable;
 };
@@ -35,7 +38,7 @@ class AuctionHouseBotMgr
 
         // force - put items in AH even if bot is disabled
         void Update(bool force = false);
-        void AddItem(AuctionHouseBotEntry e, AuctionHouseObject *auctionHouse);
+        bool AddItem(AuctionHouseBotEntry e, AuctionHouseObject *auctionHouse);
 
     protected:
         std::vector<AuctionHouseBotEntry> m_items;

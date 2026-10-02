@@ -2910,6 +2910,8 @@ CharDelete.KeepDays = 30
 #    AHBot.Enable
 #        Enable AH bot.
 #        The AH bot will automatically create listings based on the data in the 'auctionhousebot' table.
+#        Each row keeps its own target stock: listings are only added when the current number of
+#        listings for that item (player listings included) drops below the row's `count` value.
 #        Default: 0 - off
 #                 1 - on
 #
@@ -2921,14 +2923,27 @@ CharDelete.KeepDays = 30
 #                  29 - Horde (Orgrimmar, Thunderbluff and Undercity)
 #
 #    AHBot.itemcount
-#        How many listings to put into the auction house at most.
-#        The AH bot will add items until this number of listings is reached in the auction house (this includes potential player listings).
+#        Optional global cap on the total number of listings in the auction house (player listings included).
+#        The per-item targets from the 'auctionhousebot' table already define the desired stock;
+#        set this only if you want a hard ceiling on top of that.
+#        Default: 0 - no global cap
+#
+#    AHBot.DefaultItemCount
+#        Target number of listings used for table rows whose `count` column is 0.
+#        Default: 1
+#
+#    AHBot.MaxAddsPerTick
+#        Maximum number of listings the bot may create per update (once per minute).
+#        Prevents a large burst of listings when the auction house is empty or after a restart.
 #        Default: 50
+#                 0 - unlimited
 #
 ###################################################################################################################
 AHBot.Enable = 0
 AHBot.ah.fid = 120
-AHBot.itemcount = 50
+AHBot.itemcount = 0
+AHBot.DefaultItemCount = 1
+AHBot.MaxAddsPerTick = 50
 
 ###################################################################################################################
 # PLAYER BOTS

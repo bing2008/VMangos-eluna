@@ -2049,9 +2049,9 @@ void World::Update(uint32 diff)
     {
         m_timers[WUPDATE_AUCTIONS].Reset();
 
-        sAuctionHouseBotMgr.Update();
-        // Handle expired auctions
+        // Handle expired auctions first so stock-based replenishment sees the real stock.
         sAuctionMgr.Update();
+        sAuctionHouseBotMgr.Update();
     }
 
     {

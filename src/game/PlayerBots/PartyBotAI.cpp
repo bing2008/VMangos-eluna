@@ -432,7 +432,7 @@ bool PartyBotAI::SelectConjureSupplyTarget()
             foodItemId = GetConjureItemEntry(m_spells.mage.pConjureFood);
             if (sObjectMgr.GetItemPrototype(foodItemId))
             {
-                if (pTarget->GetItemCount(foodItemId) >= PB_SUPPLY_GIVE_COUNT)
+                if (pTarget->GetItemCount(foodItemId) > 0)
                     foodItemId = 0;
                 else
                     foodAmount = PB_SUPPLY_GIVE_COUNT;
@@ -446,7 +446,7 @@ bool PartyBotAI::SelectConjureSupplyTarget()
             waterItemId = GetConjureItemEntry(m_spells.mage.pConjureWater);
             if (sObjectMgr.GetItemPrototype(waterItemId))
             {
-                if (pTarget->GetItemCount(waterItemId) >= PB_SUPPLY_GIVE_COUNT)
+                if (pTarget->GetItemCount(waterItemId) > 0)
                     waterItemId = 0;
                 else
                     waterAmount = PB_SUPPLY_GIVE_COUNT;

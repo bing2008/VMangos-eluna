@@ -315,6 +315,11 @@ void AuthSocket::ReadChallengeRequest(char const* logPrefix, std::function<void(
             self->m_safelogin = self->m_login;
             LoginDatabase.escape_string(self->m_safelogin);
 
+            sLog.Out(LOG_BASIC, LOG_LVL_BASIC,
+                "[%s] Account '%s' from %s - build %u, os '%s', platform '%s', locale '%s'",
+                logPrefix, self->m_login.c_str(), self->GetRemoteIpString().c_str(), uint32(self->m_build),
+                self->m_os.c_str(), self->m_platform.c_str(), self->m_localizationName.c_str());
+
             onBody(body);
         });
     });

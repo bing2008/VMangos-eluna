@@ -9,6 +9,9 @@
 #include "Chat.h"
 #include "Utilities/Random.h"
 
+#include <algorithm>
+#include <unordered_map>
+
 INSTANTIATE_SINGLETON_1(AuctionHouseBotMgr);
 
 AuctionHouseBotMgr::~AuctionHouseBotMgr()
@@ -29,7 +32,7 @@ void AuctionHouseBotMgr::Load()
         m_config.reset();
 
     /*2 - LOAD */
-    std::unique_ptr<QueryResult> result(WorldDatabase.Query("SELECT `item`, `stack`, `bid`, `buyout` FROM `auctionhousebot`"));
+    std::unique_ptr<QueryResult> result(WorldDatabase.Query("SELECT `item`, `stack`, `bid`, `buyout`, `count` FROM `auctionhousebot`"));
 
     if (!result)
     {
@@ -54,6 +57,7 @@ void AuctionHouseBotMgr::Load()
         e.stack   = fields[1].GetUInt32();
         e.bid     = fields[2].GetUInt32();
         e.buyout  = fields[3].GetUInt32();
+        e.count   = fields[4].GetUInt32();
 
         m_items.push_back(e);
 
@@ -68,7 +72,9 @@ void AuctionHouseBotMgr::Load()
     m_config                 = std::make_unique<AuctionHouseBotConfig>();
     m_config->enable         = sConfig.GetBoolDefault("AHBot.Enable", false);
     m_config->ahfid          = sConfig.GetIntDefault("AHBot.ah.fid", 120);
-    m_config->itemcount      = sConfig.GetIntDefault("AHBot.itemcount", 2);
+    m_config->itemcount      = sConfig.GetIntDefault("AHBot.itemcount", 0);
+    m_config->defaultItemCount = sConfig.GetIntDefault("AHBot.DefaultItemCount", 1);
+    m_config->maxAddsPerTick = sConfig.GetIntDefault("AHBot.MaxAddsPerTick", 50);
 
     m_auctionHouseEntry = sAuctionMgr.GetAuctionHouseEntry(m_config->ahfid);
     if (!m_auctionHouseEntry)
@@ -103,19 +109,61 @@ void AuctionHouseBotMgr::Update(bool force /* = false */)
         return;
     }
 
-    uint32 auctions     = auctionHouse->GetCount();
-    uint32 items        = m_config->itemcount;
-    uint32 entriesCount = m_items.size();
+    // Current stock per item template. Player listings are counted on purpose:
+    // the bot only fills the gap up to the configured target, it never overstocks.
+    std::unordered_map<uint32, uint32> stock;
+    for (auto const& itr : *auctionHouse->GetAuctions())
+        ++stock[itr.second->itemTemplate];
 
-    while (auctions < items)
+    uint32 total     = auctionHouse->GetCount();
+    uint32 globalCap = m_config->itemcount;                     // 0 = no cap
+    uint32 addLimit  = force ? 0 : m_config->maxAddsPerTick;    // 0 = no cap
+    uint32 added     = 0;
+    bool   stop      = false;
+    bool   capped    = false;
+
+    for (AuctionHouseBotEntry const& e : m_items)
     {
-        AuctionHouseBotEntry item = m_items[urand(0, entriesCount - 1)];
-        AddItem(item, auctionHouse);
-        auctions++;
+        if (stop)
+            break;
+
+        uint32 target = e.count ? e.count : m_config->defaultItemCount;
+        if (!target)
+            continue;
+
+        for (uint32 have = stock[e.item]; have < target; ++have)
+        {
+            if (globalCap && total >= globalCap)
+            {
+                stop = true;
+                capped = true;
+                break;
+            }
+
+            if (addLimit && added >= addLimit)
+            {
+                stop = true;
+                break;
+            }
+
+            // Do not retry a bad entry `target` times, just skip it for this pass.
+            if (!AddItem(e, auctionHouse))
+                break;
+
+            ++stock[e.item];
+            ++total;
+            ++added;
+        }
     }
+
+    if (added)
+        sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "AHBot::Update() : Added %u listing(s), auction house now holds %u.", added, total);
+
+    if (capped)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "AHBot::Update() : Global cap AHBot.itemcount=%u reached, some items are below their target stock.", globalCap);
 }
 
-void AuctionHouseBotMgr::AddItem(AuctionHouseBotEntry e, AuctionHouseObject *auctionHouse)
+bool AuctionHouseBotMgr::AddItem(AuctionHouseBotEntry e, AuctionHouseObject *auctionHouse)
 {
     ASSERT(m_auctionHouseEntry);
 
@@ -123,17 +171,22 @@ void AuctionHouseBotMgr::AddItem(AuctionHouseBotEntry e, AuctionHouseObject *auc
     if (prototype == nullptr)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "AHBot::AddItem() : Item %u does not exist.", e.item);
-        return;
+        return false;
     }
 
     Item* item = Item::CreateItem(e.item, 1);
     if (!item)
     {
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "AHBot::AddItem() : Cannot create item.");
-        return;
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "AHBot::AddItem() : Cannot create item %u.", e.item);
+        return false;
     }
 
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "AHBot::AddItem() : Adding item %u.", e.item);
+    // Never exceed the item's own stack limit, otherwise the listing is invalid.
+    uint32 stack = std::min<uint32>(e.stack, prototype->GetMaxStackSize());
+    if (stack == 0)
+        stack = 1;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "AHBot::AddItem() : Adding item %u x%u.", e.item, stack);
 
     uint32 randomPropertyId = Item::GenerateItemRandomPropertyId(e.item);
     if (randomPropertyId != 0)
@@ -155,7 +208,7 @@ void AuctionHouseBotMgr::AddItem(AuctionHouseBotEntry e, AuctionHouseObject *auc
             etime = 86400;
             break;
     }
-    item->SetCount(e.stack);
+    item->SetCount(stack);
 
     uint32 dep = sAuctionMgr.GetAuctionDeposit(m_auctionHouseEntry, etime, item);
 
@@ -178,6 +231,7 @@ void AuctionHouseBotMgr::AddItem(AuctionHouseBotEntry e, AuctionHouseObject *auc
     sAuctionMgr.AddAItem(item);
     auctionHouse->AddAuction(auctionEntry);
     auctionEntry->SaveToDB();
+    return true;
 }
 
 bool ChatHandler::HandleAHBotUpdateCommand(char *args)

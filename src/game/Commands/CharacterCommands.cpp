@@ -37,6 +37,8 @@
 
 #include <regex>
 #include <iterator>
+#include <ctime>
+#include <unordered_map>
 
 bool ChatHandler::HandleCharacterAIInfoCommand(char* /*args*/)
 {
@@ -2019,6 +2021,111 @@ bool ChatHandler::HandleCharacterHasItemCommand(char* args)
     return true;
 }
 
+namespace
+{
+    enum PremadeTemplateType : uint8
+    {
+        PREMADE_TEMPLATE_GEAR = 0,
+        PREMADE_TEMPLATE_SPEC = 1,
+    };
+
+    struct PremadeTemplateInfo
+    {
+        uint32 level = 0;
+        std::string name;
+    };
+
+    struct PremadePendingConfirm
+    {
+        PremadeTemplateType type = PREMADE_TEMPLATE_GEAR;
+        uint32 entry = 0;
+        uint32 targetGuidLow = 0;
+        time_t expiresAt = 0;
+    };
+
+    enum PremadeConfirmResult
+    {
+        PREMADE_CONFIRM_APPLIED = 0,
+        PREMADE_CONFIRM_ARMED,
+        PREMADE_CONFIRM_INVALID,
+    };
+
+    uint32 const PREMADE_CONFIRM_WINDOW_SECS = 30;
+
+    std::unordered_map<uint32, PremadePendingConfirm> g_premadePendingConfirms;
+
+    void CleanupExpiredPremadeConfirms(time_t now)
+    {
+        for (auto itr = g_premadePendingConfirms.begin(); itr != g_premadePendingConfirms.end();)
+        {
+            if (itr->second.expiresAt <= now)
+                itr = g_premadePendingConfirms.erase(itr);
+            else
+                ++itr;
+        }
+    }
+
+    // Applying a premade template may auto-level the target up to the template
+    // level and replace equipment / reset talents, so the same request has to be
+    // repeated (as an explicit confirmation) before anything is applied.
+    PremadeConfirmResult HandlePremadeTemplateApply(Player* pTarget, PremadeTemplateType type, uint32 entry, PremadeTemplateInfo& templateInfo)
+    {
+        templateInfo.level = 0;
+        templateInfo.name.clear();
+
+        if (type == PREMADE_TEMPLATE_GEAR)
+        {
+            auto const& templates = sObjectMgr.GetPlayerPremadeGearTemplates();
+            auto const itr = templates.find(entry);
+            if (itr == templates.end())
+                return PREMADE_CONFIRM_INVALID;
+
+            templateInfo.level = itr->second.level;
+            templateInfo.name = itr->second.name;
+        }
+        else
+        {
+            auto const& templates = sObjectMgr.GetPlayerPremadeSpecTemplates();
+            auto const itr = templates.find(entry);
+            if (itr == templates.end())
+                return PREMADE_CONFIRM_INVALID;
+
+            templateInfo.level = itr->second.level;
+            templateInfo.name = itr->second.name;
+        }
+
+        time_t const now = time(nullptr);
+        CleanupExpiredPremadeConfirms(now);
+
+        uint32 const key = pTarget->GetGUIDLow();
+        auto const pendingItr = g_premadePendingConfirms.find(key);
+        if (pendingItr != g_premadePendingConfirms.end() &&
+            pendingItr->second.type == type &&
+            pendingItr->second.entry == entry &&
+            pendingItr->second.targetGuidLow == pTarget->GetGUIDLow() &&
+            pendingItr->second.expiresAt > now)
+        {
+            g_premadePendingConfirms.erase(pendingItr);
+
+            if (type == PREMADE_TEMPLATE_GEAR)
+                sObjectMgr.ApplyPremadeGearTemplateToPlayer(entry, pTarget);
+            else
+                sObjectMgr.ApplyPremadeSpecTemplateToPlayer(entry, pTarget);
+
+            return PREMADE_CONFIRM_APPLIED;
+        }
+
+        PremadePendingConfirm pending;
+        pending.type = type;
+        pending.entry = entry;
+        pending.targetGuidLow = pTarget->GetGUIDLow();
+        pending.expiresAt = now + PREMADE_CONFIRM_WINDOW_SECS;
+        g_premadePendingConfirms[key] = pending;
+
+        return PREMADE_CONFIRM_ARMED;
+    }
+}
+
 bool ChatHandler::HandleCharacterPremadeGearCommand(char* args)
 {
     Player* pPlayer = GetSelectedPlayer();
@@ -2030,7 +2137,7 @@ bool ChatHandler::HandleCharacterPremadeGearCommand(char* args)
 
     if (!*args)
     {
-        PSendSysMessage("Listing available premade templates for %s:", pPlayer->GetName());
+        PSendSysMessage("Listing available premade templates for %s (application requires confirmation):", pPlayer->GetName());
         for (auto itr : sObjectMgr.GetPlayerPremadeGearTemplates())
         {
             if (itr.second.requiredClass == pPlayer->GetClass())
@@ -2062,9 +2169,29 @@ bool ChatHandler::HandleCharacterPremadeGearCommand(char* args)
         return false;
     }
 
-    sObjectMgr.ApplyPremadeGearTemplateToPlayer(entry, pPlayer);
+    PremadeTemplateInfo templateInfo;
+    PremadeConfirmResult result = HandlePremadeTemplateApply(pPlayer, PREMADE_TEMPLATE_GEAR, entry, templateInfo);
+    if (result == PREMADE_CONFIRM_INVALID)
+    {
+        SendSysMessage("No matching premade player template found.");
+        return false;
+    }
 
-    PSendSysMessage("Premade gear template %u applied to player %s.", entry, pPlayer->GetName());
+    if (result == PREMADE_CONFIRM_APPLIED)
+    {
+        PSendSysMessage("Premade gear template %u applied to player %s.", entry, pPlayer->GetName());
+        return true;
+    }
+
+    PSendSysMessage("WARNING: Premade gear template '%s' (entry %u, level %u) was NOT applied to %s yet.",
+                    templateInfo.name.c_str(), entry, templateInfo.level, pPlayer->GetName());
+    if (pPlayer->GetLevel() < templateInfo.level)
+    {
+        PSendSysMessage("Applying it will AUTO-LEVEL %s to level %u and reset its experience!",
+                        pPlayer->GetName(), templateInfo.level);
+    }
+    PSendSysMessage("To confirm, run the exact same command (or click the same button) again within %u seconds.",
+                    uint32(PREMADE_CONFIRM_WINDOW_SECS));
     return true;
 }
 
@@ -2131,7 +2258,7 @@ bool ChatHandler::HandleCharacterPremadeSpecCommand(char* args)
 
     if (!*args)
     {
-        PSendSysMessage("Listing available premade templates for %s:", pPlayer->GetName());
+        PSendSysMessage("Listing available premade templates for %s (application requires confirmation):", pPlayer->GetName());
         for (auto itr : sObjectMgr.GetPlayerPremadeSpecTemplates())
         {
             if (itr.second.requiredClass == pPlayer->GetClass())
@@ -2163,9 +2290,29 @@ bool ChatHandler::HandleCharacterPremadeSpecCommand(char* args)
         return false;
     }
 
-    sObjectMgr.ApplyPremadeSpecTemplateToPlayer(entry, pPlayer);
+    PremadeTemplateInfo templateInfo;
+    PremadeConfirmResult result = HandlePremadeTemplateApply(pPlayer, PREMADE_TEMPLATE_SPEC, entry, templateInfo);
+    if (result == PREMADE_CONFIRM_INVALID)
+    {
+        SendSysMessage("No matching premade player template found.");
+        return false;
+    }
 
-    PSendSysMessage("Premade spec template %u applied to player %s.", entry, pPlayer->GetName());
+    if (result == PREMADE_CONFIRM_APPLIED)
+    {
+        PSendSysMessage("Premade spec template %u applied to player %s.", entry, pPlayer->GetName());
+        return true;
+    }
+
+    PSendSysMessage("WARNING: Premade spec template '%s' (entry %u, level %u) was NOT applied to %s yet.",
+                    templateInfo.name.c_str(), entry, templateInfo.level, pPlayer->GetName());
+    if (pPlayer->GetLevel() < templateInfo.level)
+    {
+        PSendSysMessage("Applying it will AUTO-LEVEL %s to level %u and reset its experience!",
+                        pPlayer->GetName(), templateInfo.level);
+    }
+    PSendSysMessage("To confirm, run the exact same command (or click the same button) again within %u seconds.",
+                    uint32(PREMADE_CONFIRM_WINDOW_SECS));
     return true;
 }
 
