@@ -16577,7 +16577,9 @@ void Player::SaveToDB(bool online, bool force)
                               "?, ?, ?, ?)");
 
     uberInsert.addUInt32(GetGUIDLow());
-    uberInsert.addUInt32(GetSession()->GetAccountId());
+    // Bots may run on a synthetic session account; store the character's real
+    // account so that loading an alt as a bot does not rebind it on save.
+    uberInsert.addUInt32(GetSession()->GetCharacterAccountId());
     uberInsert.addString(m_name);
     uberInsert.addUInt8(GetRace());
     uberInsert.addUInt8(GetClass());

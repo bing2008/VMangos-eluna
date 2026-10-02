@@ -98,7 +98,7 @@ ChatCommand * ChatHandler::getCommandTable()
     {
         { "add",        SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotAddCommand,         "", nullptr },
         { "clone",      SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotCloneCommand,       "", nullptr },
-        { "load",       SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotLoadCommand,        "", nullptr },
+        { "load",       SEC_PLAYER,             false, &ChatHandler::HandlePartyBotLoadCommand,        "", nullptr },
         { "setrole",    SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotSetRoleCommand,     "", nullptr },
         { "attackstart",SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotAttackStartCommand, "", nullptr },
         { "attackstop", SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotAttackStopCommand,  "", nullptr },
@@ -114,7 +114,7 @@ ChatCommand * ChatHandler::getCommandTable()
         { "pause",      SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotPauseCommand,       "", nullptr },
         { "unpause",    SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotUnpauseCommand,     "", nullptr },
         { "unequip",    SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotUnequipCommand,     "", nullptr },
-        { "remove",     SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotRemoveCommand,      "", nullptr },
+        { "remove",     SEC_PLAYER,             false, &ChatHandler::HandlePartyBotRemoveCommand,      "", nullptr },
         { nullptr,      0,                      false, nullptr,                                        "", nullptr },
     };
 

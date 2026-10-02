@@ -2,6 +2,7 @@
 #define _PLAYERBOTMGR_H
 
 #include "Common.h"
+#include "ObjectGuid.h"
 #include "Policies/Singleton.h"
 #include "Database/DatabaseEnv.h"
 #include "PlayerBotAI.h"
@@ -33,6 +34,7 @@ struct PlayerBotEntry
     uint64 playerGUID;
     std::string name;
     uint32 accountId;
+    uint32 realAccountId; // Account the character really belongs to (0 = unknown / temporary bot)
 
     uint32 chance;
     uint8 state; //Online, in queue or offline
@@ -41,9 +43,9 @@ struct PlayerBotEntry
     bool requestRemoval;
     std::unique_ptr<PlayerBotAI> ai;
 
-    PlayerBotEntry(uint64 guid, uint32 account, uint32 chance_): playerGUID(guid), accountId(account), chance(chance_), state(PB_STATE_OFFLINE), isChatBot(false), customBot(false), requestRemoval(false), ai(nullptr)
+    PlayerBotEntry(uint64 guid, uint32 account, uint32 chance_): playerGUID(guid), accountId(account), realAccountId(0), chance(chance_), state(PB_STATE_OFFLINE), isChatBot(false), customBot(false), requestRemoval(false), ai(nullptr)
     {}
-    PlayerBotEntry(): playerGUID(0), accountId(0), chance(100.0f), state(PB_STATE_OFFLINE), isChatBot(false), customBot(false), requestRemoval(false), ai(nullptr)
+    PlayerBotEntry(): playerGUID(0), accountId(0), realAccountId(0), chance(100.0f), state(PB_STATE_OFFLINE), isChatBot(false), customBot(false), requestRemoval(false), ai(nullptr)
     {}
 };
 
@@ -80,9 +82,14 @@ class PlayerBotMgr
         bool AddOrRemoveBot();
 
         bool AddBot(PlayerBotAI* ai);
-        bool AddBot(uint32 playerGuid, bool chatBot = false, PlayerBotAI* pAI = nullptr);
+        bool AddBot(uint32 playerGuid, bool chatBot = false, PlayerBotAI* pAI = nullptr, bool allowAccountOnline = false);
         bool DeleteBot(std::map<uint64, std::shared_ptr<PlayerBotEntry>>::iterator iter);
         bool DeleteBot(uint32 playerGuid);
+
+        // Number of party bots that are still being loaded for the given leader.
+        uint32 GetPendingPartyBotCount(ObjectGuid leaderGuid) const;
+        // True if the character is currently loading or online as a bot.
+        bool IsBotActive(uint32 playerGuid) const;
 
         bool AddRandomBot();
         bool DeleteRandomBot();

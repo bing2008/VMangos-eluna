@@ -217,6 +217,9 @@ class WorldSession
         uint32 GetGUID() const { return m_guid; }
         AccountTypes GetSecurity() const { return m_security; }
         uint32 GetAccountId() const { return m_accountId; }
+        // Account the current character belongs to. For bot sessions this is the
+        // character owner's account while GetAccountId() returns the bot session id.
+        uint32 GetCharacterAccountId() const;
         std::string GetUsername() const { return m_username; }
         void SetUsername(std::string const& s) { m_username = s; }
         uint32 GetLatency() const { return m_latency; }

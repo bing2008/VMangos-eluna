@@ -2993,6 +2993,16 @@ AHBot.MaxAddsPerTick = 50
 #        Default: 0 (restricted)
 #                 1 (no restrictions)
 #
+#    PartyBot.OwnAccountTeam
+#        Allows normal players to load characters of their own account as party bots
+#        ("personal team"). The account stays online: bots run on a synthetic session
+#        account and their saved progress is written back to the character's real account.
+#        Loading characters of other accounts still requires an administrator.
+#        Requires PlayerBot.AllowSaving = 1 to keep experience, levels and items.
+#        Use ".partybot load <name> [name2] [name3] [name4]" to summon the team at once.
+#        Default: 0 (disabled)
+#                 1 (enabled)
+#
 #    PartyBot.AutoEquip
 #        What gear will new partybots spawn with.
 #        Default: 1 (random items)
@@ -3028,6 +3038,7 @@ PlayerBot.ShowInWhoList = 0
 
 PartyBot.MaxBots = 0
 PartyBot.SkipChecks = 0
+PartyBot.OwnAccountTeam = 0
 PartyBot.AutoEquip = 1
 PartyBot.RandomGearLevelDifference = 10
 

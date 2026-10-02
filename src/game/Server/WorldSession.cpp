@@ -111,6 +111,13 @@ WorldSession::~WorldSession()
     delete m_cheatData;
 }
 
+uint32 WorldSession::GetCharacterAccountId() const
+{
+    if (m_bot && m_bot->realAccountId)
+        return m_bot->realAccountId;
+    return m_accountId;
+}
+
 // Get the player name
 char const* WorldSession::GetPlayerName() const
 {

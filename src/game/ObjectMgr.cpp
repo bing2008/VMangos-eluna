@@ -840,7 +840,7 @@ PlayerCacheData* ObjectMgr::InsertPlayerInCache(Player* pPlayer)
     auto pSession = pPlayer->GetSession();
     if (!pSession)
         return nullptr;
-    auto accountId = pSession->GetAccountId();
+    auto accountId = pSession->GetCharacterAccountId();
 
     return InsertPlayerInCache(pPlayer->GetGUIDLow(), pPlayer->GetRace(), pPlayer->GetClass(), pPlayer->GetGender(), accountId, pPlayer->GetName(), pPlayer->GetLevel(), pPlayer->GetCachedZoneId());
 }
@@ -892,7 +892,7 @@ void ObjectMgr::UpdatePlayerCache(Player* pPlayer)
     if (!data)
         return;
     if (pPlayer->GetSession())
-        UpdatePlayerCache(data, pPlayer->GetRace(), pPlayer->GetClass(), pPlayer->GetGender(), pPlayer->GetSession()->GetAccountId(), pPlayer->GetName(), pPlayer->GetLevel(), pPlayer->GetCachedZoneId());
+        UpdatePlayerCache(data, pPlayer->GetRace(), pPlayer->GetClass(), pPlayer->GetGender(), pPlayer->GetSession()->GetCharacterAccountId(), pPlayer->GetName(), pPlayer->GetLevel(), pPlayer->GetCachedZoneId());
 
     UpdatePlayerCachedPosition(data, pPlayer->GetMapId(), pPlayer->GetPositionX(), pPlayer->GetPositionY(), pPlayer->GetPositionZ(), pPlayer->GetOrientation(), pPlayer->IsTaxiFlying());
 }

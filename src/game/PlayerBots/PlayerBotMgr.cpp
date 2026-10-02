@@ -103,6 +103,9 @@ void PlayerBotMgr::Load()
             uint32 chance = fields[1].GetUInt32();
 
             std::shared_ptr<PlayerBotEntry> entry = std::make_shared<PlayerBotEntry>(guid, acc, chance);
+            // Remember the account the character was stored with so that saving
+            // does not rebind it to the synthetic bot session account.
+            entry->realAccountId = sObjectMgr.GetPlayerAccountIdByGUID(guid);
             entry->ai.reset(CreatePlayerBotAI(fields[2].GetCppString()));
             entry->ai->botEntry = entry.get();
             if (!sObjectMgr.GetPlayerNameByGUID(guid, entry->name))
@@ -405,14 +408,21 @@ bool PlayerBotMgr::AddBot(PlayerBotAI* ai)
     return AddBot(e->playerGUID, false);
 }
 
-bool PlayerBotMgr::AddBot(uint32 playerGUID, bool chatBot, PlayerBotAI* pAI)
+bool PlayerBotMgr::AddBot(uint32 playerGUID, bool chatBot, PlayerBotAI* pAI, bool allowAccountOnline)
 {
     uint32 accountId = 0;
+    uint32 realAccountId = 0;
     auto iter = m_bots.find(playerGUID);
     if (iter == m_bots.end())
-        accountId = sObjectMgr.GetPlayerAccountIdByGUID(playerGUID);
+    {
+        realAccountId = sObjectMgr.GetPlayerAccountIdByGUID(playerGUID);
+        accountId = realAccountId;
+    }
     else
+    {
+        realAccountId = iter->second->realAccountId;
         accountId = iter->second->accountId;
+    }
 
     if (!accountId)
     {
@@ -422,14 +432,24 @@ bool PlayerBotMgr::AddBot(uint32 playerGUID, bool chatBot, PlayerBotAI* pAI)
 
     if (sWorld.FindSession(accountId))
     {
-        sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "[PlayerBotMgr] Account %u is already online!", accountId);
-        return false;
+        // The account is already online. This happens when a player loads one of
+        // their own alts as a bot. Give the bot session a synthetic account id so
+        // both sessions can coexist; the real account id is remembered so that
+        // saving the character keeps its original account binding.
+        if (!allowAccountOnline || !realAccountId)
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "[PlayerBotMgr] Account %u is already online!", accountId);
+            return false;
+        }
+        accountId = GenBotAccountId();
     }
 
     std::shared_ptr<PlayerBotEntry> e;
     if (iter != m_bots.end())
     {
         e = iter->second;
+        e->accountId = accountId;
+        e->realAccountId = realAccountId;
 
         if (pAI) // new AI
         {
@@ -445,6 +465,7 @@ bool PlayerBotMgr::AddBot(uint32 playerGUID, bool chatBot, PlayerBotAI* pAI)
         e->playerGUID   = playerGUID;
         e->chance       = 10;
         e->accountId    = accountId;
+        e->realAccountId = realAccountId;
         e->isChatBot    = chatBot;
         if (pAI)
         {
@@ -652,6 +673,30 @@ bool PlayerBotMgr::IsChatBot(uint32 playerGuid)
 {
     auto iter = m_bots.find(playerGuid);
     return iter != m_bots.end() && iter->second->isChatBot;
+}
+
+uint32 PlayerBotMgr::GetPendingPartyBotCount(ObjectGuid leaderGuid) const
+{
+    uint32 count = 0;
+    for (auto const& itr : m_bots)
+    {
+        if (itr.second->state != PB_STATE_LOADING)
+            continue;
+
+        if (!itr.second->ai)
+            continue;
+
+        if (PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(itr.second->ai.get()))
+            if (pAI->m_leaderGuid == leaderGuid)
+                ++count;
+    }
+    return count;
+}
+
+bool PlayerBotMgr::IsBotActive(uint32 playerGuid) const
+{
+    auto iter = m_bots.find(playerGuid);
+    return iter != m_bots.end() && iter->second->state != PB_STATE_OFFLINE;
 }
 
 void PlayerBotMgr::AddAllBots()
@@ -1002,47 +1047,102 @@ bool ChatHandler::HandlePartyBotCloneCommand(char* args)
 bool ChatHandler::HandlePartyBotLoadCommand(char* args)
 {
     Player* pPlayer = m_session->GetPlayer();
-    if (!pPlayer)
-        return false;
-
-    std::string name = ExtractPlayerNameFromLink(&args);
-    if (name.empty())
+    if (!pPlayer || !args || !*args)
     {
-        SendSysMessage(LANG_PLAYER_NOT_FOUND);
+        SendSysMessage("Syntax: .partybot load <name> [name2] [name3] [name4]");
         SetSentErrorMessage(true);
         return false;
     }
 
-    ObjectGuid guid = sObjectMgr.GetPlayerGuidByName(name).GetCounter();
-    if (!guid)
+    bool const isAdmin = GetSession()->GetSecurity() >= SEC_ADMINISTRATOR;
+    bool const ownAccountMode = sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_OWN_ACCOUNT);
+
+    if (!PartyBotAddRequirementCheck(pPlayer, nullptr))
     {
-        SendSysMessage(LANG_PLAYER_NOT_FOUND);
         SetSentErrorMessage(true);
         return false;
     }
 
-    if (sObjectAccessor.FindPlayerNotInWorld(guid))
+    // Accepts several names at once so a whole personal team can be summoned
+    // with a single command, e.g. ".partybot load Alt1 Alt2 Alt3 Alt4".
+    uint32 loadedCount = 0;
+    while (args && *args)
     {
-        SendSysMessage("Player is already online!");
-        SetSentErrorMessage(true);
-        return false;
+        std::string name = ExtractPlayerNameFromLink(&args);
+        if (name.empty())
+            break;
+
+        ObjectGuid guid = sObjectMgr.GetPlayerGuidByName(name).GetCounter();
+        if (!guid)
+        {
+            SendSysMessage(LANG_PLAYER_NOT_FOUND);
+            SetSentErrorMessage(true);
+            break;
+        }
+
+        if (sObjectAccessor.FindPlayerNotInWorld(guid) || sPlayerBotMgr.IsBotActive(guid))
+        {
+            PSendSysMessage("%s is already online or already loaded as a bot.", name.c_str());
+            SetSentErrorMessage(true);
+            continue;
+        }
+
+        uint32 const targetAccountId = sObjectMgr.GetPlayerAccountIdByGUID(guid);
+        bool const ownAccount = targetAccountId && targetAccountId == pPlayer->GetSession()->GetAccountId();
+
+        // Regular players may only load characters from their own account, and only
+        // when the personal team mode is enabled. Admins can load any offline character.
+        if (!isAdmin && (!ownAccount || !ownAccountMode))
+        {
+            PSendSysMessage("You can only load characters from your own account: %s", name.c_str());
+            SetSentErrorMessage(true);
+            continue;
+        }
+
+        // Bots join the group asynchronously, so count the ones that are still
+        // loading to avoid overflowing the group while several are summoned.
+        uint32 const pendingCount = sPlayerBotMgr.GetPendingPartyBotCount(pPlayer->GetObjectGuid());
+        uint32 const groupSize = pPlayer->GetGroup() ? pPlayer->GetGroup()->GetMembersCount() : 1;
+        uint32 const maxBots = sWorld.getConfig(CONFIG_UINT32_PARTY_BOT_MAX_BOTS);
+
+        if (groupSize + pendingCount >= MAX_GROUP_SIZE)
+        {
+            SendSysMessage("Your group is full.");
+            SetSentErrorMessage(true);
+            break;
+        }
+
+        if (maxBots && (groupSize - 1 + pendingCount) >= maxBots)
+        {
+            SendSysMessage("You have reached the maximum number of party bots.");
+            SetSentErrorMessage(true);
+            break;
+        }
+
+        if (!sPlayerBotMgr.IsSavingAllowed())
+            SendSysMessage("Warning: PlayerBot.AllowSaving is disabled, progress of the loaded character will not be saved.");
+
+        float x, y, z;
+        pPlayer->GetNearPoint(pPlayer, x, y, z, 0, 5.0f, frand(0.0f, 6.0f));
+
+        PartyBotAI* pAI = new PartyBotAI(pPlayer, pPlayer->GetMapId(), pPlayer->GetMap()->GetInstanceId(), x, y, z, pPlayer->GetOrientation());
+
+        if (!sPlayerBotMgr.AddBot(guid, false, pAI, isAdmin || ownAccountMode))
+        {
+            delete pAI;
+            PSendSysMessage("Error loading %s.", name.c_str());
+            SetSentErrorMessage(true);
+            continue;
+        }
+
+        PSendSysMessage("Loading %s as party bot.", name.c_str());
+        ++loadedCount;
     }
 
-    float x, y, z;
-    pPlayer->GetNearPoint(pPlayer, x, y, z, 0, 5.0f, frand(0.0f, 6.0f));
+    if (loadedCount > 1)
+        PSendSysMessage("Loading %u party bots as your team.", loadedCount);
 
-    PartyBotAI* pAI = new PartyBotAI(pPlayer, pPlayer->GetMapId(), pPlayer->GetMap()->GetInstanceId(), x, y, z, pPlayer->GetOrientation());
-
-    if (!sPlayerBotMgr.AddBot(guid, false, pAI))
-    {
-        delete pAI;
-        SendSysMessage("Error spawning bot.");
-        SetSentErrorMessage(true);
-        return false;
-    }
-
-    PSendSysMessage("Loading %s as party bot.", name.c_str());
-    return true;
+    return loadedCount != 0;
 }
 
 bool ChatHandler::HandlePartyBotSetRoleCommand(char* args)
@@ -1840,8 +1940,9 @@ bool ChatHandler::HandlePartyBotUnequipCommand(char* args)
 
 bool ChatHandler::HandlePartyBotRemoveCommand(char* args)
 {
+    Player* pPlayer = GetSession()->GetPlayer();
     Player* pTarget = GetSelectedPlayer();
-    if (!pTarget)
+    if (!pTarget || !pPlayer)
     {
         SendSysMessage(LANG_NO_CHAR_SELECTED);
         SetSentErrorMessage(true);
@@ -1852,6 +1953,18 @@ bool ChatHandler::HandlePartyBotRemoveCommand(char* args)
     {
         if (PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pTarget->AI()))
         {
+            if (GetSession()->GetSecurity() < SEC_ADMINISTRATOR)
+            {
+                bool const ownTeam = sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_OWN_ACCOUNT) &&
+                    (pAI->m_leaderGuid == pPlayer->GetObjectGuid() ||
+                     (pPlayer->GetGroup() && pPlayer->GetGroup() == pTarget->GetGroup()));
+                if (!ownTeam)
+                {
+                    SendSysMessage("You can only remove bots of your own team.");
+                    SetSentErrorMessage(true);
+                    return false;
+                }
+            }
             pAI->botEntry->requestRemoval = true;
             return true;
         }
