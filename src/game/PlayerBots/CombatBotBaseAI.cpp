@@ -2358,7 +2358,18 @@ void CombatBotBaseAI::SummonPetIfNeeded()
                     me->CastSpell(pPet, SPELL_REVIVE_PET, true);
             }
             else
-                me->CastSpell(me, SPELL_CALL_PET, true);
+            {
+                // The pet is not in the world anymore, but a pet record still
+                // exists. If that record is a dead pet (currentHealth == 0),
+                // Call Pet can never work: the core rejects it with PETTAME_DEAD
+                // and the pet would only ever whistle. Revive Pet rebuilds the
+                // pet from the database instead.
+                CharacterPetCache* currentPet = sCharacterDatabaseCache.GetCharacterPetByOwner(me->GetGUIDLow());
+                if (currentPet && currentPet->currentHealth == 0)
+                    me->CastSpell(me, SPELL_REVIVE_PET, true);
+                else
+                    me->CastSpell(me, SPELL_CALL_PET, true);
+            }
 
             return;
         }
